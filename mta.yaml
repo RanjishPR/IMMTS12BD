@@ -1,0 +1,180 @@
+_schema-version: 3.3.0
+ID: incident-management
+description: A simple CAP project.
+version: 1.0.0
+modules:
+  - name: incident-management-srv
+    type: nodejs
+    path: gen/srv
+    requires:
+      - name: incident-management-auth
+      - name: incident-management-db
+    provides:
+      - name: srv-api
+        properties:
+          srv-url: ${default-url}
+    parameters:
+      buildpack: nodejs_buildpack
+      readiness-health-check-http-endpoint: /health
+      readiness-health-check-type: http
+    build-parameters:
+      builder: npm
+  - name: incident-management-app-deployer
+    type: com.sap.application.content
+    path: .
+    requires:
+      - name: srv-api
+      - name: incident-management-auth
+      - name: incident-management-html5-repo-host
+        parameters:
+          content-target: true
+    parameters:
+      config:
+        destinations:
+        - forwardAuthToken: true
+          name: incident-management-srv-api
+          url: ~{srv-api/srv-url}
+        - name: ui5
+          url: https://ui5.sap.com          
+    build-parameters:
+      build-result: resources/
+      requires:
+        - artifacts:
+            - nsincidents.zip
+          name: nsincidents
+          target-path: resources/
+
+  - name: incident-management-destination-content
+    type: com.sap.application.content
+    requires:
+      - name: incident-management-destination-service
+        parameters:
+          content-target: true
+      - name: incident-management-html5-repo-host
+        parameters:
+          service-key:
+            name: incident-management-html5-repo-host-key
+      - name: incident-management-auth
+        parameters:
+          service-key:
+            name: incident-management-auth-key
+      - name: incidents_html_repo_runtime
+        parameters:
+          service-key:
+            name: incidents-html5-app-runtime-service-key
+    parameters:
+      content:
+        subaccount:
+          destinations:
+            - Name: incident-management_cdm
+              ServiceInstanceName: incidents-html5-app-runtime-service
+              ServiceKeyName: incidents-html5-app-runtime-service-key
+              URL: https://html5-apps-repo-rt.${default-domain}/applications/cdm/incidents
+          existing_destinations_policy: ignore
+    build-parameters:
+      no-source: true
+  - name: nsincidents
+    type: html5
+    path: app/incidents
+    build-parameters:
+      build-result: dist
+      builder: custom
+      commands:
+        - npm install
+        - npm run build:cf
+      supported-platforms:
+        []
+
+  - name: incident-management-mtx
+    type: nodejs
+    path: gen/mtx/sidecar
+    build-parameters:
+      builder: npm-ci
+    parameters:
+      memory: 256M
+      disk-quota: 512M
+    provides:
+      - name: mtx-api
+        properties:
+          mtx-url: ${default-url}
+    requires:
+      - name: incident-management-auth
+      - name: incident-management-registry
+      - name: incident-management-db
+      - name: incident-management-html5-repo-host
+resources:
+  - name: incidents_html_repo_runtime
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: html5-apps-repo
+      service-name: incidents-html5-app-runtime-service
+      service-plan: app-runtime
+  - name: incident-management-html5-repo-host
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: html5-apps-repo
+      service-plan: app-host
+  - name: incident-management-auth
+    type: org.cloudfoundry.managed-service
+    parameters:
+      config:
+        tenant-mode: shared
+        xsappname: incident-management-${org}-${space}
+      path: ./xs-security.json
+      service: xsuaa
+      service-plan: application
+  - name: incident-management-destination-service
+    type: org.cloudfoundry.managed-service
+    parameters:
+      config:
+        init_data:
+          subaccount:
+            destinations:
+              - Authentication: NoAuthentication
+                Name: incident-management-rt
+                ProxyType: Internet
+                CEP.HTML5contentprovider: true
+                Type: HTTP
+                URL: https://t2s9wnsg3hzfll0c.launchpad.${default-domain}
+            existing_destinations_policy: update
+        version: 1.0.0
+      service: destination
+      service-name: incident-management-destination-service
+      service-plan: lite
+    
+  - name: incident-management-registry
+    type: org.cloudfoundry.managed-service
+    requires:
+      - name: mtx-api
+    parameters:
+      service: saas-registry
+      service-plan: application
+      config:
+        xsappname: incident-management-${org}-${space}
+        appName: incident-management-${org}-${space}
+        displayName: incident-management
+        description: A simple CAP project.
+        category: 'Category'
+        appUrls:
+          getDependencies: ~{mtx-api/mtx-url}/-/cds/saas-provisioning/dependencies
+          onSubscription: ~{mtx-api/mtx-url}/-/cds/saas-provisioning/tenant/{tenantId}
+          onSubscriptionAsync: true
+          onUnSubscriptionAsync: true
+          onUpdateDependenciesAsync: true
+          callbackTimeoutMillis: 300000 # Increase if your deployments are taking longer than that
+  - name: incident-management-db
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: service-manager
+      service-plan: container
+parameters:
+  deploy_mode: html5-repo
+  enable-parallel-deployments: true
+build-parameters:
+  before-all:
+    - builder: custom
+      commands:
+        - npm ci
+        - mkdir -p resources
+        - cp workzone/cdm.json resources/cdm.json
+        - npx cds build --production   
